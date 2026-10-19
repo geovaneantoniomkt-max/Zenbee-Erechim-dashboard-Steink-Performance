@@ -1,0 +1,42 @@
+{
+  "client": {
+    "name": "ZenBee Mobi",
+    "legal_name": "ZenBee Mobi Erechim",
+    "segment": "Mobilidade urbana · app de corridas",
+    "market": "Erechim e região (RS)",
+    "agency": "Steink Performance",
+    "logo": "/logo.jpg",
+    "website": ""
+  },
+  "budget": {
+    "meta_monthly": 945,
+    "google_monthly": 0
+  },
+  "_comentario_metas": "Metas tiradas dos primeiros 12 dias da conta (08 a 19/10/2026): mediana diária de R$ 0,18 por acesso ao link de download, R$ 0,26 por visita ao perfil e R$ 0,80 por novo seguidor. Arredondadas para cima (R$ 0,20 / R$ 0,30 / R$ 1,00) porque o histórico ainda é curto; revisar depois de 30 dias de veiculação. A verba mensal (R$ 945) é a soma dos orçamentos diários atuais (R$ 15,50 + R$ 16,00) × 30 dias — trocar pela verba contratada.",
+  "targets": {
+    "cost_per_landing_page_view": 0.2,
+    "cost_per_profile_visit": 0.3,
+    "cost_per_follower": 1.0,
+    "cost_per_purchase": 0,
+    "cost_per_add_to_cart": 0,
+    "cost_per_conversation": 0,
+    "google_cost_per_conversion": 0,
+    "cpm_topo_max": 10,
+    "ctr_min": 1.0,
+    "frequency_max": 2.5,
+    "min_spend_for_alert": 10
+  },
+  "meta": {
+    "ad_account_id": "1980738282592067",
+    "business_id": "1847399216247431",
+    "page_id": "1271112742762331",
+    "ig_user_id": "",
+    "pixel_id": "1640597037575852"
+  },
+  "instagram": { "username": "" },
+  "google_ads": {
+    "enabled": false,
+    "customer_id": "",
+    "note": "A ZenBee roda só Meta Ads. Para incluir Google Ads no futuro: enabled = true, customer_id e os segredos GOOGLE_ADS_* no GitHub."
+  }
+}

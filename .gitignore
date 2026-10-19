@@ -1,0 +1,37 @@
+# Dados gerados pelo coletor — NUNCA commitar (o repositório pode ser público)
+public/data/*
+!public/data/.gitkeep
+
+# Segredos locais
+.env
+.env.*
+.dev.vars
+*.token
+
+# Ferramentas
+node_modules/
+.wrangler/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+
+# Senha local de teste
+SENHA-LOCAL.txt
+
+# Credenciais do Google Ads (uso local)
+.env.google
+
+# Local Netlify folder
+.netlify
+
+# Pacote gerado para o deploy manual no Netlify
+deploy-netlify/
+
+# Lista local de segredos para copiar no GitHub
+SEGREDOS-GITHUB.txt
+.env.meta
+
+# Pacote gerado para o upload pelo painel do Cloudflare (leva os dados do cliente)
+deploy-cloudflare/
+deploy-cloudflare.zip
