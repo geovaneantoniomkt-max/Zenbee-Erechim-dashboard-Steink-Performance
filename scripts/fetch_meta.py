@@ -204,6 +204,37 @@ INSIGHT_FIELDS = ",".join([
     "actions", "action_values", "video_thruplay_watched_actions", "video_p25_watched_actions", "video_p100_watched_actions",
 ])
 
+# Resultados que a API só entrega no campo `results`, não em `actions` (indicador -> chave em actions).
+# Campanha de visita ao perfil do Instagram: sem isso o dashboard só enxergaria cliques no link.
+RESULT_KEYS = {"profile_visit_view": "profile_visit"}
+RESULTS_OK = True  # vira False se a API recusar o campo results na série diária
+
+
+def add_results(acts: dict, row: dict) -> dict:
+    res = row.get("results")
+    for item in res if isinstance(res, list) else [res] if isinstance(res, dict) else []:
+        key = RESULT_KEYS.get(str(item.get("indicator") or "").removeprefix("actions:"))
+        n = sum(inum(v.get("value")) for v in item.get("values") or [])
+        if key and n and key not in acts:
+            acts[key] = n
+    return acts
+
+
+def insights(path: str, params: dict, sticky: bool = False) -> list:
+    """api_all pedindo também o campo results; se a API recusar, repete sem ele.
+    sticky=True (série diária) desliga o results para as chamadas seguintes e avisa no dashboard."""
+    global RESULTS_OK
+    if RESULTS_OK:
+        try:
+            return api_all(path, {**params, "fields": params["fields"] + ",results"})
+        except ApiError as e:
+            if sticky:
+                RESULTS_OK = False
+                warn(f"a API recusou o campo results ({e}); visitas ao perfil passam a contar cliques no link")
+            else:
+                log(f"  sem o campo results em {params.get('breakdowns') or params.get('level')}: {e}")
+    return api_all(path, params)
+
 
 def fetch_ads_data() -> dict:
     acct = f"act_{ACCOUNT_ID}"
@@ -313,15 +344,15 @@ def fetch_ads_data() -> dict:
     daily = []
     action_types: set[str] = set()
     for a, b in daterange_chunks(since, until, 31):
-        rows = api_all(f"{acct}/insights", {
+        rows = insights(f"{acct}/insights", {
             "level": "ad",
             "time_increment": 1,
             "time_range": json.dumps({"since": a.isoformat(), "until": b.isoformat()}),
             "fields": INSIGHT_FIELDS,
             "limit": 500,
-        })
+        }, sticky=True)
         for r in rows:
-            acts = actions_to_dict(r.get("actions"))
+            acts = add_results(actions_to_dict(r.get("actions")), r)
             action_types.update(acts.keys())
             daily.append({
                 "date": r.get("date_start"),
@@ -377,7 +408,7 @@ def fetch_ads_data() -> dict:
     breakdowns = {}
     for name, bd in (("age_gender", "age,gender"), ("region", "region"), ("platform_position", "publisher_platform,platform_position")):
         try:
-            rows = api_all(f"{acct}/insights", {
+            rows = insights(f"{acct}/insights", {
                 "level": "campaign", "date_preset": "last_30d", "breakdowns": bd,
                 "fields": "campaign_id,spend,impressions,reach,clicks,inline_link_clicks,actions,action_values",
                 "limit": 500,
@@ -387,7 +418,7 @@ def fetch_ads_data() -> dict:
                 **{k: r.get(k) for k in bd.split(",")},
                 "spend": round(fnum(r.get("spend")), 2), "impressions": inum(r.get("impressions")),
                 "reach": inum(r.get("reach")), "clicks": inum(r.get("clicks")),
-                "link_clicks": inum(r.get("inline_link_clicks")), "actions": actions_to_dict(r.get("actions")),
+                "link_clicks": inum(r.get("inline_link_clicks")), "actions": add_results(actions_to_dict(r.get("actions")), r),
                 "values": values_to_dict(r.get("action_values")),
             } for r in rows]
         except ApiError as e:

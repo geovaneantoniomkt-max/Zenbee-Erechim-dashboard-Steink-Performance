@@ -309,6 +309,9 @@ function accountGoals() {
 /** Linhas das campanhas cujo resultado é `def`. */
 const rowsOfGoal = (rows, def) => rows.filter((r) => defFor(r.campaign_id).id === def.id);
 const goalTitle = (def) => def.group || def.label;
+/** A API de anúncios nem sempre informa os seguidores ganhos pelo anúncio; sem esse dado, as colunas de seguidores somem
+    (o crescimento total de seguidores fica na aba Orgânico). */
+const hasFollows = () => (state.meta?.daily || []).some((r) => r.actions?.instagram_profile_follow);
 const perUnit = (def, v) => (ok(v) ? (def.per ? `${fmt.brl(v)}/mil` : fmt.brl(v)) : "—");
 
 /* ============================================================ Google Ads */
@@ -672,12 +675,18 @@ function renderExec() {
       sub: gEnabled() ? `Meta ${fmt.brl(all.spend)} · Google ${fmt.brl(g.cost)}` : `${fmt.brl(div(totalSpend, all.days.size))} por dia com entrega`,
     }),
     ...goalAggs.map(goalTile),
-    tile({
-      label: DEF.ig_follow.label, value: fmt.int(follows),
-      delta: deltaBadge(follows, countOf(prevAll, DEF.ig_follow)),
-      sub: h("span", {}, `${fmt.brl(costPerResult(followAgg, DEF.ig_follow))} por seguidor${T.cost_per_follower ? ` · meta ${fmt.brl(T.cost_per_follower)}` : ""} `,
-        follows > 0 && T.cost_per_follower ? badge(followAs.level, levelWord(followAs.level)) : null),
-    }),
+    hasFollows()
+      ? tile({
+        label: DEF.ig_follow.label, value: fmt.int(follows),
+        delta: deltaBadge(follows, countOf(prevAll, DEF.ig_follow)),
+        sub: h("span", {}, `${fmt.brl(costPerResult(followAgg, DEF.ig_follow))} por seguidor${T.cost_per_follower ? ` · meta ${fmt.brl(T.cost_per_follower)}` : ""} `,
+          follows > 0 && T.cost_per_follower ? badge(followAs.level, levelWord(followAs.level)) : null),
+      })
+      : tile({
+        label: "Engajamentos", value: fmt.compact(countOf(all, DEF.post_engagement)),
+        delta: deltaBadge(countOf(all, DEF.post_engagement), countOf(prevAll, DEF.post_engagement)),
+        sub: `${fmt.brl(div(all.spend, countOf(all, DEF.post_engagement)))} por engajamento · ${fmt.compact(all.thruplays)} ThruPlays`,
+      }),
     tile({
       label: "Cliques no link", value: fmt.int(all.link_clicks),
       delta: deltaBadge(all.link_clicks, prevAll.link_clicks),
@@ -763,7 +772,7 @@ function renderExec() {
       gEnabled() ? h("td", { text: fmt.brl(gm.cost) }) : null,
       gEnabled() ? h("td", { text: fmt.dec1(gm.conversions) }) : null,
       ...goals.flatMap((x) => { const ga = aggregate(rowsOfGoal(monthRowsOf, x.def)); return [h("td", { text: fmt.int(resultsOf(ga, x.def)) }), h("td", { text: perUnit(x.def, costPerResult(ga, x.def)) })]; }),
-      h("td", { text: fmt.int(countOf(a, DEF.ig_follow)) }),
+      hasFollows() ? h("td", { text: fmt.int(countOf(a, DEF.ig_follow)) }) : null,
       h("td", { text: fmt.int(a.impressions) }), h("td", { text: fmt.int(a.link_clicks) }),
       h("td", { text: fmt.pct(a.link_ctr) }), h("td", { text: fmt.brl(div(a.spend, a.link_clicks)) }), h("td", { text: fmt.brl(a.cpm) }));
   };
@@ -784,7 +793,7 @@ function renderExec() {
       h("th", { text: "Mês" }), h("th", { text: "Investimento" }),
       gEnabled() ? h("th", { text: "Google" }) : null, gEnabled() ? h("th", { text: "Conv. Google" }) : null,
       ...goals.flatMap((x) => [h("th", { text: (x.def.short || x.def.label).replace(/^./, (c) => c.toUpperCase()) }), h("th", { text: `Custo/${x.def.unit}` })]),
-      h("th", { text: "Seguidores" }), h("th", { text: "Impressões" }), h("th", { text: "Cliques no link" }), h("th", { text: "CTR" }), h("th", { text: "CPC" }), h("th", { text: "CPM" }))),
+      hasFollows() ? h("th", { text: "Seguidores" }) : null, h("th", { text: "Impressões" }), h("th", { text: "Cliques no link" }), h("th", { text: "CTR" }), h("th", { text: "CPC" }), h("th", { text: "CPM" }))),
     h("tbody", {}, ...monthRowsEls, totalRow),
   ));
 
@@ -975,7 +984,7 @@ function renderMeta() {
   );
 
   const cols = () => h("tr", {}, h("th", { text: "Status" }), h("th", { class: "l", text: "Nome" }), h("th", { text: "Orçam./dia" }), h("th", { text: "Result." }),
-    h("th", { text: "Custo/result." }), h("th", { text: "Seguidores" }), h("th", { text: "Impress." }), h("th", { text: "Alcance" }),
+    h("th", { text: "Custo/result." }), hasFollows() ? h("th", { text: "Seguidores" }) : null, h("th", { text: "Impress." }), h("th", { text: "Alcance" }),
     h("th", { text: "CPM" }), h("th", { text: "CTR link" }), h("th", { text: "Cliques link" }), h("th", { text: "CPC link" }), h("th", { text: "Gasto" }), h("th", { class: "l", text: "Ação" }));
   const table = h("div", { class: "table-wrap" }, h("table", {}, h("thead", {}, cols()), h("tbody", {}, ...campRows.map((x) => campaignRow(x)))));
 
@@ -1044,7 +1053,7 @@ function campaignRow(x, isAdset = false) {
     h("td", { text: budget }),
     h("td", {}, h("b", { text: fmt.int(results) }), " ", prevResults != null ? deltaBadge(results, prevResults) : null),
     h("td", {}, cprCell(agg, def)),
-    h("td", { text: fmt.int(countOf(agg, DEF.ig_follow)) }),
+    hasFollows() ? h("td", { text: fmt.int(countOf(agg, DEF.ig_follow)) }) : null,
     h("td", { text: fmt.int(agg.impressions) }),
     h("td", { text: fmt.int(agg.reach) }),
     h("td", { text: fmt.brl(agg.cpm) }),
@@ -1431,7 +1440,9 @@ function renderLegend() {
       ["Acesso ao link de download", "Visualização da página de destino da campanha de download (o Linktree com os links da Play Store e da App Store), contada pelo Meta depois do clique no anúncio. Meta atual: " + fmt.brl(T.cost_per_landing_page_view) + " por acesso."],
       ["Download do app", "O Meta não enxerga a instalação: ele para na página de links. Para medir downloads, compare com os números das lojas (Play Console / App Store Connect) no mesmo período, ou conecte o SDK do Meta ao app para otimizar as campanhas por instalação."],
       ["Visita ao perfil do Instagram", "Pessoas que abriram o perfil do Instagram a partir do anúncio da campanha de perfil. Meta atual: " + fmt.brl(T.cost_per_profile_visit) + " por visita."],
-      ["Novo seguidor no Instagram", "Pessoas que passaram a seguir o perfil depois de ver o anúncio. O custo por seguidor usa o gasto da campanha de perfil, de onde vem quase todo seguidor. Meta atual: " + fmt.brl(T.cost_per_follower) + "."],
+      hasFollows()
+        ? ["Novo seguidor no Instagram", "Pessoas que passaram a seguir o perfil depois de ver o anúncio. O custo por seguidor usa o gasto da campanha de perfil, de onde vem quase todo seguidor. Meta atual: " + fmt.brl(T.cost_per_follower) + "."]
+        : ["Seguidores", "A API de anúncios não informa quantos seguidores cada anúncio trouxe. O crescimento de seguidores do Instagram, dia a dia, está na aba Orgânico."],
       ["Cliques no link", "Cliques que levam para fora do anúncio (Linktree ou perfil). CTR link = cliques no link ÷ impressões; CPC = gasto ÷ cliques no link."],
       ["Alcance", "Contas únicas que viram o anúncio. Não soma entre dias — os atalhos de período usam o valor exato da API; períodos personalizados somam o alcance diário (aproximação)."],
       ["Frequência", "Impressões ÷ alcance. Acima de " + fmt.dec1(T.frequency_max) + " indica saturação do público."],
@@ -1478,6 +1489,7 @@ function renderHeader() {
   $("#f-since").min = first; $("#f-until").max = last;
   /* metas do menu lateral: cada <strong data-target="chave"> mostra state.targets[chave] */
   for (const el of $$("[data-target]")) el.textContent = fmt.brl(state.targets[el.dataset.target]);
+  for (const el of $$('[data-target="cost_per_follower"], [name="cost_per_follower"]')) el.parentElement.hidden = !hasFollows();
   const gBudget = $("#t-gbudget");
   if (gBudget) {
     if (state.targets.google_monthly > 0) gBudget.textContent = fmt.brl(state.targets.google_monthly);
