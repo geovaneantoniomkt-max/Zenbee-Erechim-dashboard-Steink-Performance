@@ -15,7 +15,7 @@ Variáveis de ambiente:
                                      instagram_manage_insights, business_management
   META_AD_ACCOUNT_ID  (padrão 1980738282592067 — conta "ZenBee Mobi")
   META_PAGE_ID        (padrão 1271112742762331 — página "ZenBee Mobi Erechim")
-  META_IG_USER_ID     (sem padrão — ID do Instagram Business da ZenBee; vazio pula o orgânico do Instagram)
+  META_IG_USER_ID     (opcional — sem ele, usa o Instagram Business vinculado à página)
   META_API_VERSION    (padrão v23.0)
   OUT_DIR             (padrão public/data)
   META_SINCE / SINCE  (padrão 2026-10-01, YYYY-MM-DD) data inicial da série diária (limite da API: 37 meses)
@@ -337,6 +337,7 @@ def fetch_ads_data() -> dict:
                 "values": values_to_dict(r.get("action_values")),
             })
         log(f"  {a} a {b}: {len(rows)} linhas")
+    log(f"Tipos de ação na série diária: {', '.join(sorted(action_types)) or 'nenhum'}")
 
     # ---- totais exatos por preset (alcance/frequência não somam entre dias) -------------
     presets = {}
@@ -486,12 +487,22 @@ def fetch_organic(today: dt.date) -> dict:
         out["warnings"].append(f"Facebook página {PAGE_ID}: {e}")
 
     # ---------------- Instagram ------------------------------------------------------
-    if not IG_ID:
-        out["warnings"].append("Instagram: defina META_IG_USER_ID (ID da conta do Instagram Business) para coletar o orgânico")
+    # Sem META_IG_USER_ID, usa a conta do Instagram Business vinculada à página.
+    ig_id = IG_ID
+    if not ig_id:
+        try:
+            linked = api(PAGE_ID, {"fields": "instagram_business_account{id,username}"}, token=page_token or TOKEN, retries=2)
+            ig_id = str((linked.get("instagram_business_account") or {}).get("id") or "")
+            if ig_id:
+                log(f"Instagram vinculado à página: {ig_id}")
+        except ApiError as e:
+            out["warnings"].append(f"Instagram: não consegui ler a conta vinculada à página ({e})")
+    if not ig_id:
+        out["warnings"].append("Instagram: nenhuma conta do Instagram Business vinculada à página — vincule o perfil à página ou defina META_IG_USER_ID")
         return out
     try:
         ig_tok = page_token or TOKEN
-        p = api(IG_ID, {"fields": "id,username,name,followers_count,follows_count,media_count,profile_picture_url,biography,website"}, token=ig_tok)
+        p = api(ig_id, {"fields": "id,username,name,followers_count,follows_count,media_count,profile_picture_url,biography,website"}, token=ig_tok)
         ig = {
             "id": p.get("id"), "username": p.get("username"), "name": p.get("name"),
             "followers": p.get("followers_count"), "follows": p.get("follows_count"),
@@ -504,7 +515,7 @@ def fetch_organic(today: dt.date) -> dict:
             series = []
             try:
                 for a, b in daterange_chunks(span, today, 30):
-                    res = api(f"{IG_ID}/insights", {
+                    res = api(f"{ig_id}/insights", {
                         "metric": m, "period": "day",
                         "since": a.isoformat(), "until": (b + dt.timedelta(days=1)).isoformat(),
                     }, token=ig_tok)
@@ -518,7 +529,7 @@ def fetch_organic(today: dt.date) -> dict:
         total_metrics = "views,profile_views,accounts_engaged,website_clicks,total_interactions,likes,comments,shares,saves,replies,follows_and_unfollows"
         for label, span in (("last_7d", 7), ("last_30d", 30)):
             try:
-                res = api(f"{IG_ID}/insights", {
+                res = api(f"{ig_id}/insights", {
                     "metric": total_metrics, "period": "day", "metric_type": "total_value",
                     "since": (today - dt.timedelta(days=span)).isoformat(), "until": today.isoformat(),
                 }, token=ig_tok)
@@ -526,7 +537,7 @@ def fetch_organic(today: dt.date) -> dict:
             except ApiError as e:
                 # tenta um subconjunto mais conservador
                 try:
-                    res = api(f"{IG_ID}/insights", {
+                    res = api(f"{ig_id}/insights", {
                         "metric": "views,profile_views,accounts_engaged,website_clicks,total_interactions", "period": "day", "metric_type": "total_value",
                         "since": (today - dt.timedelta(days=span)).isoformat(), "until": today.isoformat(),
                     }, token=ig_tok)
@@ -540,7 +551,7 @@ def fetch_organic(today: dt.date) -> dict:
             try:
                 # a janela é meio-aberta: since=d, until=d+1 devolve exatamente o dia d
                 # (com since == until a API responde vazio, o que zerava a série)
-                res = api(f"{IG_ID}/insights", {
+                res = api(f"{ig_id}/insights", {
                     "metric": "profile_views,accounts_engaged,views", "period": "day", "metric_type": "total_value",
                     "since": d.isoformat(), "until": (d + dt.timedelta(days=1)).isoformat(),
                 }, token=ig_tok, retries=2)
@@ -557,7 +568,7 @@ def fetch_organic(today: dt.date) -> dict:
             ig["daily"]["views"] = vw
         # mídias recentes + insights por mídia
         try:
-            medias = api_all(f"{IG_ID}/media", {
+            medias = api_all(f"{ig_id}/media", {
                 "fields": "id,caption,media_type,media_product_type,timestamp,permalink,thumbnail_url,media_url,like_count,comments_count,is_comment_enabled",
                 "limit": 50,
             }, token=ig_tok, max_pages=2)
@@ -582,7 +593,7 @@ def fetch_organic(today: dt.date) -> dict:
             out["warnings"].append(f"Instagram mídias: {e}")
         out["instagram"] = ig
     except ApiError as e:
-        out["warnings"].append(f"Instagram conta {IG_ID}: {e}")
+        out["warnings"].append(f"Instagram conta {ig_id}: {e}")
 
     return out
 
