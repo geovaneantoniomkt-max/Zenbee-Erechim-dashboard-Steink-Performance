@@ -206,16 +206,31 @@ function groupBy(rows, key) {
 }
 function rowsIn(since, until, rows) { return (rows || state.meta?.daily || []).filter((r) => r.date >= since && r.date <= until); }
 
-/** Primeiro action_type disponível da lista (a API muda o nome conforme a conta). */
+/** Primeiro action_type da lista que a conta registra (a API muda o nome conforme a conta).
+    Decidido uma vez para a conta inteira: escolher por agregado trocava "0 acessos" por cliques
+    num anúncio ou num dia sem resultado. */
+const accountKeyCache = new Map();
 function firstKey(agg, keys) {
-  for (const k of keys || []) if (agg.actions[k]) return k;
-  return (keys || [])[0];
+  const seen = state.meta?.action_types_seen;
+  if (!seen?.length) {
+    for (const k of keys || []) if (agg.actions[k]) return k;
+    return (keys || [])[0];
+  }
+  const id = (keys || []).join("|");
+  if (!accountKeyCache.has(id)) accountKeyCache.set(id, (keys || []).find((k) => seen.includes(k)) || (keys || [])[0]);
+  return accountKeyCache.get(id);
 }
 function countOf(agg, def) {
   if (!def) return 0;
   if (def.metric) return agg[def.metric] || 0;
   const k = firstKey(agg, def.keys);
   return agg.actions[k] || 0;
+}
+/** Alcance e frequência exatos (API) de uma campanha ou conjunto no atalho de período escolhido.
+    Alcance não soma entre dias; em período personalizado não há número exato. */
+function exactReach(id) {
+  const key = { 7: "last_7d", 14: "last_14d", 30: "last_30d", month: "this_month", lastmonth: "last_month", max: "maximum" }[state.preset];
+  return (key && state.meta?.campaign_reach?.[key]?.[id]) || null;
 }
 function valueOf(agg, def) {
   for (const k of def?.valueKeys || []) if (agg.values[k]) return agg.values[k];
@@ -246,6 +261,8 @@ function assess(agg, def, { minSpend } = {}) {
   if (!target || !ok(cpr)) return { level: "neutral", text: "Sem meta definida para este objetivo" };
   const ratio = cpr / target;
   if (ratio <= 1) return { level: "ok", text: "Dentro da meta — manter", ratio };
+  /* com poucos reais gastos o custo por resultado oscila demais para julgar */
+  if (agg.spend < min) return { level: "neutral", text: `Só ${fmt.brl(agg.spend)} gastos — pouco para avaliar`, ratio };
   if (ratio <= 1.6) return { level: "warn", text: `Custo ${nfDec1.format(ratio)}× a meta — otimizar segmentação/criativo`, ratio };
   return { level: "crit", text: `Custo ${nfDec1.format(ratio)}× a meta — reduzir verba e revisar`, ratio };
 }
@@ -592,8 +609,8 @@ function renderExec() {
 
   const presetKey = { 7: "last_7d", 14: "last_14d", 30: "last_30d", month: "this_month", lastmonth: "last_month", max: "maximum" }[state.preset];
   const exact = presetKey && m.presets?.[presetKey];
-  const reach = exact?.reach ?? all.reach;
-  const reachNote = exact ? "alcance exato (API)" : "soma dos alcances diários";
+  /* alcance só é exato nos atalhos de período: a soma do alcance diário conta a mesma pessoa várias vezes */
+  const reach = exact?.reach ?? null;
 
   const totalSpend = all.spend + g.cost;
   const prevTotalSpend = prevAll.spend + gPrev.cost;
@@ -694,8 +711,9 @@ function renderExec() {
     }),
     tile({
       label: "Alcance", value: fmt.compact(reach),
-      delta: deltaBadge(all.reach, prevAll.reach),
-      sub: `${reachNote} · ${fmt.compact(all.impressions)} impressões · CPM ${fmt.brl(all.cpm)}`,
+      sub: ok(reach)
+        ? `pessoas únicas · frequência ${fmt.dec(exact.frequency)} · CPM ${fmt.brl(all.cpm)}`
+        : "escolha um atalho de período para ver o alcance exato",
     }),
   );
 
@@ -708,7 +726,7 @@ function renderExec() {
       ], x.agg.spend > 0 ? assess(x.agg, x.def).level : null)),
     platformBar("topo", "Entrega e atenção", "o que o público viu e fez", [
       [fmt.compact(all.impressions), "impressões"],
-      [fmt.dec(exact?.frequency ?? all.frequency), exact ? "frequência" : "frequência diária"],
+      [fmt.dec(exact?.frequency ?? null), "frequência"],
       [fmt.compact(countOf(all, DEF.post_engagement)), "engajamentos"],
     ]),
     gEnabled()
@@ -784,7 +802,7 @@ function renderExec() {
     k === last.slice(0, 7) ? "parcial" : "", k === last.slice(0, 7) ? h("span", { class: "badge warn", text: "parcial" }) : null));
   const shown = new Set(shownKeys);
   const totalRow = shownKeys.length > 1
-    ? histRow(showAllYears ? `Total · ${years.length} anos` : `Total ${state.histYear}`, daily.filter((r) => shown.has(r.date.slice(0, 7))),
+    ? histRow(showAllYears ? `Total · ${years.length} ${years.length === 1 ? "ano" : "anos"}` : `Total ${state.histYear}`, daily.filter((r) => shown.has(r.date.slice(0, 7))),
       gAggregate(gDaily.filter((r) => shown.has(r.date.slice(0, 7)))), "total", null)
     : null;
 
@@ -905,10 +923,12 @@ function buildAlerts({ rows, all, goalAggs, campRows, gCampRows, adRows, project
         detail: `${perUnit(x.def, prev)} → ${perUnit(x.def, cur)}. Verificar saturação de público (frequência), cansaço do criativo ou queda de CTR.` });
     }
   }
-  const highFreq = campRows.filter((x) => x.agg.frequency > (T.frequency_max || 2.5) && x.agg.spend > 20 && x.def.kind !== "awareness");
+  /* frequência exata da API (impressões ÷ pessoas únicas); só existe nos atalhos de período */
+  const highFreq = campRows.map((x) => ({ ...x, freq: exactReach(x.id)?.frequency }))
+    .filter((x) => ok(x.freq) && x.freq > (T.frequency_max || 2.5) && x.agg.spend > 20 && x.def.kind !== "awareness");
   if (highFreq.length) {
     out.push({ level: "warn", title: `Frequência acima de ${fmt.dec1(T.frequency_max)} em ${campWord(highFreq.length)}`,
-      detail: "Público saturando: ampliar segmentação ou renovar criativos. " + highFreq.map((x) => `${x.c.name} (${fmt.dec(x.agg.frequency)}×)`).join(" · ") });
+      detail: "Cada pessoa já viu os anúncios várias vezes: o público está saturando. Ampliar a segmentação ou trocar os criativos. " + highFreq.map((x) => `${x.c.name} (${fmt.dec(x.freq)}×)`).join(" · ") });
   }
   const lowCtr = campRows.filter((x) => x.def.kind !== "awareness" && x.agg.impressions > 1000 && x.agg.link_ctr < (T.ctr_min || 1));
   if (lowCtr.length) {
@@ -984,7 +1004,7 @@ function renderMeta() {
   );
 
   const cols = () => h("tr", {}, h("th", { text: "Status" }), h("th", { class: "l", text: "Nome" }), h("th", { text: "Orçam./dia" }), h("th", { text: "Result." }),
-    h("th", { text: "Custo/result." }), hasFollows() ? h("th", { text: "Seguidores" }) : null, h("th", { text: "Impress." }), h("th", { text: "Alcance" }),
+    h("th", { text: "Custo/result." }), hasFollows() ? h("th", { text: "Seguidores" }) : null, h("th", { text: "Impress." }), h("th", { text: "Alcance", title: "Pessoas únicas no período (exato da API nos atalhos de período)" }), h("th", { text: "Freq." }),
     h("th", { text: "CPM" }), h("th", { text: "CTR link" }), h("th", { text: "Cliques link" }), h("th", { text: "CPC link" }), h("th", { text: "Gasto" }), h("th", { class: "l", text: "Ação" }));
   const table = h("div", { class: "table-wrap" }, h("table", {}, h("thead", {}, cols()), h("tbody", {}, ...campRows.map((x) => campaignRow(x)))));
 
@@ -1029,8 +1049,9 @@ function renderMeta() {
     block("Meta Ads", `${fmt.date(state.since)} a ${fmt.date(state.until)} · ${goals.filter((x) => targetFor(x.def)).map((x) => `meta ${perUnit(x.def, targetFor(x.def))} por ${x.def.unit}`).join(" · ")}`, head, table),
     block("Conjuntos por campanha", "orçamento é definido no conjunto quando a campanha não usa CBO",
       ...(groups.length ? groups.map((g) => h("div", { class: "table-wrap" }, g)) : [h("div", { class: "empty", text: "Sem conjuntos com dados no período." })])),
-    bdCards.length ? block("Quem está respondendo", "distribuição do gasto e dos resultados por objetivo", h("div", { class: "grid c2" }, ...bdCards)) : null,
   );
+  /* append(null) escreveria o texto "null" na página */
+  if (bdCards.length) sec.append(block("Quem está respondendo", "distribuição do gasto e dos resultados por objetivo", h("div", { class: "grid c2" }, ...bdCards)));
 }
 function campaignRow(x, isAdset = false) {
   const { c, agg, prev, def } = x;
@@ -1055,7 +1076,9 @@ function campaignRow(x, isAdset = false) {
     h("td", {}, cprCell(agg, def)),
     hasFollows() ? h("td", { text: fmt.int(countOf(agg, DEF.ig_follow)) }) : null,
     h("td", { text: fmt.int(agg.impressions) }),
-    h("td", { text: fmt.int(agg.reach) }),
+    /* alcance/frequência exatos do Meta; em período personalizado não existem (não somam entre dias) */
+    h("td", { text: fmt.int(exactReach(c.id)?.reach ?? null), title: exactReach(c.id) ? null : "Alcance exato só nos atalhos de período" }),
+    h("td", {}, (() => { const f = exactReach(c.id)?.frequency; return ok(f) && f > (state.targets.frequency_max || 2.5) ? badge("warn", fmt.dec(f)) : fmt.dec(f ?? null); })()),
     h("td", { text: fmt.brl(agg.cpm) }),
     h("td", { text: fmt.pct(agg.link_ctr) }),
     h("td", { text: fmt.int(agg.link_clicks) }),
@@ -1352,14 +1375,16 @@ function renderOrganic() {
   if (ig) {
     const last = dataBounds().last;
     const reach30 = seriesLast(ig.daily?.reach, 30);
-    const reachPrev = ig.daily?.reach ? ig.daily.reach.filter((p) => p.date < addDays(last, -29) && p.date >= addDays(last, -59)) : [];
     const foll30 = seriesLast(ig.daily?.follower_count, 30);
     const t30 = ig.totals?.last_30d || {}, t7 = ig.totals?.last_7d || {};
     const pv30 = seriesLast(ig.daily?.profile_views, 30), ae30 = seriesLast(ig.daily?.accounts_engaged, 30);
     const tiles = h("div", { class: "grid c6" },
       tile({ label: "Seguidores", value: fmt.int(ig.followers), sub: `${fmt.int(ig.media_count)} publicações · segue ${fmt.int(ig.follows)}`, accent: true }),
       tile({ label: "Novos seguidores (30d)", value: foll30.length ? "+" + fmt.int(sum(foll30, (p) => p.value)) : "—", sub: foll30.length ? `${fmt.dec1(sum(foll30, (p) => p.value) / foll30.length)} por dia` : "série indisponível" }),
-      tile({ label: "Alcance (30d)", value: reach30.length ? fmt.int(sum(reach30, (p) => p.value)) : "—", delta: reachPrev.length ? deltaBadge(sum(reach30, (p) => p.value), sum(reachPrev, (p) => p.value)) : null, sub: "soma do alcance diário" }),
+      /* alcance da janela inteira (contas únicas) quando a API entrega; a soma diária conta a mesma conta várias vezes */
+      ok(t30.reach)
+        ? tile({ label: "Alcance (30d)", value: fmt.int(t30.reach), sub: `contas únicas · 7d: ${fmt.int(t7.reach ?? null)}` })
+        : tile({ label: "Alcance (30d)", value: "—", sub: "alcance de 30 dias indisponível na API (a soma dos dias repetiria contas)" }),
       tile({ label: "Visitas ao perfil (30d)", value: fmt.int(t30.profile_views ?? (pv30.length ? sum(pv30, (p) => p.value) : null)), sub: `7d: ${fmt.int(t7.profile_views)}` }),
       tile({ label: "Contas engajadas (30d)", value: fmt.int(t30.accounts_engaged ?? (ae30.length ? sum(ae30, (p) => p.value) : null)), sub: `interações: ${fmt.int(t30.total_interactions)}` }),
       tile({ label: "Visualizações (30d)", value: fmt.int(t30.views), sub: `cliques no site: ${fmt.int(t30.website_clicks)}` }),
@@ -1444,7 +1469,7 @@ function renderLegend() {
         ? ["Novo seguidor no Instagram", "Pessoas que passaram a seguir o perfil depois de ver o anúncio. O custo por seguidor usa o gasto da campanha de perfil, de onde vem quase todo seguidor. Meta atual: " + fmt.brl(T.cost_per_follower) + "."]
         : ["Seguidores", "A API de anúncios não informa quantos seguidores cada anúncio trouxe. O crescimento de seguidores do Instagram, dia a dia, está na aba Orgânico."],
       ["Cliques no link", "Cliques que levam para fora do anúncio (Linktree ou perfil). CTR link = cliques no link ÷ impressões; CPC = gasto ÷ cliques no link."],
-      ["Alcance", "Contas únicas que viram o anúncio. Não soma entre dias — os atalhos de período usam o valor exato da API; períodos personalizados somam o alcance diário (aproximação)."],
+      ["Alcance", "Pessoas únicas que viram o anúncio no período, como no Gerenciador de Anúncios. Não soma entre dias (a mesma pessoa aparece em vários dias), por isso só aparece nos atalhos de período, com o valor exato da API; em período personalizado fica em branco."],
       ["Frequência", "Impressões ÷ alcance. Acima de " + fmt.dec1(T.frequency_max) + " indica saturação do público."],
       ["CPM", "Custo por mil impressões."],
       ["CTR", "Cliques no link ÷ impressões. Abaixo de " + fmt.pct(T.ctr_min) + " sugere criativo pouco atrativo."],
@@ -1481,7 +1506,10 @@ function renderHeader() {
   $("#brand-market").textContent = c.market;
   $("#topbar-sub").textContent = `${c.segment} · Meta Ads${gEnabled() ? ", Google Ads" : ""}${state.organic ? " e orgânico" : ""}`;
   $("#hdr-period").textContent = `${fmt.date(state.since)} — ${fmt.date(state.until)}`;
-  $("#hdr-compare").textContent = `${fmt.date(state.prevSince)} — ${fmt.date(state.prevUntil)}`;
+  /* comparar com um período anterior ao início dos anúncios só gera "—" nas variações */
+  $("#hdr-compare").textContent = state.prevUntil < dataBounds().first
+    ? `sem dados antes de ${fmt.date(dataBounds().first)}`
+    : `${fmt.date(state.prevSince)} — ${fmt.date(state.prevUntil)}`;
   $("#hdr-updated").textContent = fmt.dateTime(state.meta.generated_at);
   const { first, last } = dataBounds();
   $("#f-note").textContent = `Dados disponíveis de ${fmt.date(first)} a ${fmt.date(last)}`;

@@ -392,17 +392,22 @@ def fetch_ads_data() -> dict:
         except ApiError as e:
             warn(f"preset {preset}: {e}")
 
-    # ---- alcance por campanha no período total e nos últimos 7/30 dias -------------
+    # ---- alcance e frequência exatos por campanha e por conjunto, em cada atalho de período ----
+    # Alcance não soma entre dias (a mesma pessoa aparece em vários dias): somar a série diária
+    # chegava a 3x o valor do Gerenciador. O dashboard usa estes números nos atalhos de período.
     campaign_reach = {}
-    for preset in ("last_7d", "last_30d", "maximum"):
-        try:
-            rows = api_all(f"{acct}/insights", {
-                "level": "campaign", "date_preset": preset,
-                "fields": "campaign_id,reach,frequency,spend",
-            })
-            campaign_reach[preset] = {r["campaign_id"]: {"reach": inum(r.get("reach")), "frequency": round(fnum(r.get("frequency")), 3)} for r in rows}
-        except ApiError as e:
-            warn(f"alcance por campanha ({preset}): {e}")
+    for preset in ("last_7d", "last_14d", "last_30d", "this_month", "last_month", "maximum"):
+        campaign_reach[preset] = {}
+        for level, key in (("campaign", "campaign_id"), ("adset", "adset_id")):
+            try:
+                rows = api_all(f"{acct}/insights", {
+                    "level": level, "date_preset": preset,
+                    "fields": f"{key},reach,frequency,spend",
+                })
+                for r in rows:
+                    campaign_reach[preset][r[key]] = {"reach": inum(r.get("reach")), "frequency": round(fnum(r.get("frequency")), 3)}
+            except ApiError as e:
+                warn(f"alcance por {level} ({preset}): {e}")
 
     # ---- breakdowns úteis (últimos 30 dias): idade/gênero, região, posicionamento -------
     breakdowns = {}
@@ -575,6 +580,17 @@ def fetch_organic(today: dt.date) -> dict:
                     ig["totals"][label] = {d.get("name"): inum((d.get("total_value") or {}).get("value")) for d in res.get("data", [])}
                 except ApiError as e2:
                     out["warnings"].append(f"Instagram totais {label}: {e2}")
+            # alcance da janela inteira (contas únicas); somar o alcance diário conta a mesma pessoa várias vezes
+            try:
+                res = api(f"{ig_id}/insights", {
+                    "metric": "reach", "period": "day", "metric_type": "total_value",
+                    "since": (today - dt.timedelta(days=span)).isoformat(), "until": today.isoformat(),
+                }, token=ig_tok, retries=2)
+                for d in res.get("data", []):
+                    if d.get("name") == "reach" and (d.get("total_value") or {}).get("value") is not None:
+                        ig["totals"].setdefault(label, {})["reach"] = inum(d["total_value"]["value"])
+            except ApiError as e:
+                log(f"  Instagram alcance total {label} indisponível: {e}")
         # série diária de visitas ao perfil / contas engajadas (30 dias, 1 chamada por dia)
         pv, ae, vw = [], [], []
         for i in range(30, -1, -1):
